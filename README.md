@@ -76,3 +76,7 @@ automation:
   next birthday.
 - Only contacts with a parseable `BDAY` appear. If an addressbook is large,
   the first refresh may take a moment.
+
+## License
+
+[MIT](LICENSE)
