@@ -1,0 +1,12 @@
+{
+  "domain": "carddav_bday_calendar",
+  "name": "CardDAV Birthday Calendar",
+  "codeowners": ["@max-t-d"],
+  "config_flow": true,
+  "documentation": "https://github.com/max-t-d/ha_carddav_bday_calendar",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/max-t-d/ha_carddav_bday_calendar/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}

@@ -1,0 +1,51 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Mit CardDAV verbinden",
+        "description": "Geburtstage werden aus deinen Kontakten gelesen und als ein Kalender angezeigt. Für iCloud: https://contacts.icloud.com, deine Apple-Account-E-Mail und ein app-spezifisches Passwort.",
+        "data": {
+          "url": "Server-URL",
+          "username": "Benutzername",
+          "password": "Passwort",
+          "verify_ssl": "SSL-Zertifikat prüfen"
+        },
+        "data_description": {
+          "url": "Die Server-Adresse oder direkt eine Adressbuch-URL. Adressbücher werden automatisch gefunden."
+        }
+      },
+      "addressbooks": {
+        "title": "Adressbücher auswählen",
+        "description": "Es wurden mehrere Adressbücher gefunden. Die Geburtstage der ausgewählten landen im Kalender.",
+        "data": {
+          "addressbooks": "Adressbücher"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Erneut anmelden",
+        "description": "Die Zugangsdaten für {username} funktionieren nicht mehr. Gib ein neues Passwort ein (bei iCloud: ein neues app-spezifisches Passwort).",
+        "data": {
+          "password": "Passwort"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Verbindung zum Server fehlgeschlagen",
+      "invalid_auth": "Benutzername oder Passwort ungültig",
+      "no_addressbooks": "Auf diesem Server wurden keine Adressbücher gefunden",
+      "no_addressbook_selected": "Wähle mindestens ein Adressbuch aus",
+      "unknown": "Unerwarteter Fehler"
+    },
+    "abort": {
+      "already_configured": "Dieses Konto ist bereits eingerichtet",
+      "reauth_successful": "Erneute Anmeldung erfolgreich"
+    }
+  },
+  "entity": {
+    "calendar": {
+      "birthdays": {
+        "name": "Geburtstage"
+      }
+    }
+  }
+}
