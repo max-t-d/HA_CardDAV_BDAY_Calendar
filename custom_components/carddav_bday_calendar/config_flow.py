@@ -97,6 +97,7 @@ class CardDavBirthdayConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=self.add_suggested_values_to_schema(
                 STEP_USER_SCHEMA, user_input
             ),
+            description_placeholders={"icloud_url": DEFAULT_URL},
             errors=errors,
         )
 

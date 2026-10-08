@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Connect to CardDAV",
-        "description": "Birthdays are read from your contacts and shown as one calendar. For iCloud use https://contacts.icloud.com, your Apple Account email and an app-specific password.",
+        "description": "Birthdays are read from your contacts and shown as one calendar. For iCloud use {icloud_url}, your Apple Account email and an app-specific password.",
         "data": {
           "url": "Server URL",
           "username": "Username",
