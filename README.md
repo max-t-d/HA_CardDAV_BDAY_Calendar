@@ -27,10 +27,22 @@ that creates a single calendar instead.
 
 ## Installation
 
-**HACS:** add this repository as a custom repository (type *Integration*), install,
-restart Home Assistant.
+### HACS (recommended)
 
-**Manual:** copy `custom_components/carddav_bday_calendar` into your
+[![Open your Home Assistant instance and open this repository in HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=max-t-d&repository=HA_CardDAV_BDAY_Calendar&category=integration)
+
+Or manually:
+
+1. HACS → ⋮ (top right) → *Custom repositories*
+2. Repository: `https://github.com/max-t-d/HA_CardDAV_BDAY_Calendar`, type: *Integration* → *Add*
+3. Search for "CardDAV Birthday Calendar" in HACS, *Download*
+4. Restart Home Assistant
+
+Updates then show up in HACS like any other integration.
+
+### Manual
+
+Copy `custom_components/carddav_bday_calendar` into your
 `config/custom_components/` folder and restart.
 
 Then go to *Settings → Devices & services → Add integration → CardDAV Birthday Calendar*.
