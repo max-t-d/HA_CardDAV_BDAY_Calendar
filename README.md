@@ -70,6 +70,25 @@ automation:
           message: "{{ trigger.calendar_event.summary }}"
 ```
 
+## Refresh behavior
+
+CardDAV has no push mechanism, so the integration polls:
+
+- once when it is set up (Home Assistant start or reload), then **every 6 hours**
+- changes to contacts (new birthday, edited date, deleted contact) therefore show
+  up with a delay of up to 6 hours
+- which birthday is "next" and the `on`/`off` state are calculated locally and
+  roll over at midnight, independent of the polling and of server availability
+- if a refresh fails, the previous data is kept and the next attempt follows at
+  the next interval; revoked credentials start the reauthentication flow
+
+To refresh immediately, call the `homeassistant.update_entity` action on
+`calendar.birthdays` (for example from a dashboard button) or reload the
+integration under *Settings → Devices & services*.
+
+The interval is fixed in `custom_components/carddav_bday_calendar/const.py`
+(`SCAN_INTERVAL`).
+
 ## Notes
 
 - The entity state is `on` on a day with a birthday; its attributes show the
