@@ -99,3 +99,19 @@ The interval is fixed in `custom_components/carddav_bday_calendar/const.py`
 ## License
 
 [MIT](LICENSE)
+
+## Troubleshooting
+
+The first fetch runs while the integration is being set up, so the calendar is
+filled immediately. If it stays empty:
+
+1. Check *Settings → System → Logs* for `carddav_bday_calendar`. A warning
+   `No birthdays found in addressbook …` also tells you how many vCards the
+   server returned.
+2. For details, enable debug logging (*Settings → Devices & services →
+   CardDAV Birthday Calendar → Enable debug logging*), reload the integration
+   and look at the `REPORT on …` line: it shows how many vCards arrived and how
+   many had a usable birthday.
+3. Make sure the contacts really have a birthday field and that you are
+   looking at a month that contains one (the calendar view only shows the
+   visible range).

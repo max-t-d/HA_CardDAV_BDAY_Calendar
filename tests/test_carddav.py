@@ -218,6 +218,27 @@ async def test_fetch_birthdays_raises_when_both_queries_fail():
     assert err.value.status == 501
 
 
+async def test_fetch_birthdays_falls_back_when_filtered_query_returns_nothing():
+    # Server answers 207 but ignores partial retrieval: no address-data at all.
+    empty = _multistatus(
+        "<d:response><d:href>/c0.vcf</d:href><d:propstat><d:prop/>"
+        "<d:status>HTTP/1.1 404 Not Found</d:status></d:propstat></d:response>"
+    )
+    full = _report(_vcard("1", "Erika", "1990-05-17"))
+    session = FakeSession({("REPORT", BOOK): [FakeResponse(207, empty), FakeResponse(207, full)]})
+    birthdays = await _client(session).fetch_birthdays(BOOK)
+    assert [b.name for b in birthdays] == ["Erika"]
+    assert len(session.calls) == 2
+
+
+async def test_fetch_birthdays_without_any_birthday_is_empty_not_an_error(caplog):
+    report = _report(_vcard("1", "No Birthday", None))
+    session = FakeSession({("REPORT", BOOK): [FakeResponse(207, report)]})
+    assert await _client(session).fetch_birthdays(BOOK) == []
+    assert "No birthdays found" in caplog.text
+    assert "1 vCards seen" in caplog.text
+
+
 def test_parse_report_rejects_garbage():
     with pytest.raises(Exception, match="Invalid XML"):
         parse_report(b"<not xml")

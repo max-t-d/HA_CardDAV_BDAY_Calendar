@@ -140,18 +140,25 @@ def parse_multistatus(data: bytes, base_url: str) -> list[Resource]:
     return resources
 
 
-def parse_report(data: bytes) -> list[Birthday]:
-    """Extract birthdays from an addressbook-query REPORT response (deduplicated by UID)."""
+def parse_report(data: bytes) -> tuple[list[Birthday], int]:
+    """Extract birthdays from an addressbook-query REPORT response.
+
+    Returns (birthdays deduplicated by UID, number of vCards in the response).
+    """
     try:
         root = ET.fromstring(data)
     except ET.ParseError as err:
         raise CardDavError(f"Invalid XML from server: {err}") from err
 
     birthdays: dict[str, Birthday] = {}
+    cards = 0
     for element in root.iter(f"{CARDDAV}address-data"):
-        if element.text and (birthday := parse_vcard(element.text)):
+        if not element.text:
+            continue
+        cards += 1
+        if birthday := parse_vcard(element.text):
             birthdays.setdefault(birthday.uid, birthday)
-    return list(birthdays.values())
+    return list(birthdays.values()), cards
 
 
 def _name_from_href(href: str) -> str:
@@ -265,15 +272,38 @@ class CardDavClient:
     async def fetch_birthdays(self, addressbook_url: str) -> list[Birthday]:
         """Return all contacts with a usable BDAY from one addressbook."""
         status = 0
+        answered = False
+        cards = 0
         for body in (_QUERY_BIRTHDAYS, _QUERY_ALL):
             status, data, _ = await self._request(
                 "REPORT", addressbook_url, depth="1", body=body
             )
-            if status == 207:
-                break
-            _LOGGER.debug("REPORT on %s returned HTTP %s, trying fallback", addressbook_url, status)
-        else:
-            raise CardDavHttpError(status, addressbook_url)
+            if status != 207:
+                _LOGGER.debug(
+                    "REPORT on %s returned HTTP %s, trying fallback", addressbook_url, status
+                )
+                continue
+            answered = True
+            # Parsing can be a few MB of XML if the server ignored partial retrieval.
+            birthdays, cards = await asyncio.get_running_loop().run_in_executor(
+                None, parse_report, data
+            )
+            _LOGGER.debug(
+                "REPORT on %s: %d vCards in response, %d with a usable birthday",
+                addressbook_url,
+                cards,
+                len(birthdays),
+            )
+            if birthdays:
+                return birthdays
+            # A 207 without any birthday can also mean the server ignored or
+            # mishandled the filter / partial retrieval, so try the plain query too.
 
-        # Parsing can be a few MB of XML if the server ignored partial retrieval.
-        return await asyncio.get_running_loop().run_in_executor(None, parse_report, data)
+        if not answered:
+            raise CardDavHttpError(status, addressbook_url)
+        _LOGGER.warning(
+            "No birthdays found in addressbook %s (%d vCards seen in the last response)",
+            addressbook_url,
+            cards,
+        )
+        return []
