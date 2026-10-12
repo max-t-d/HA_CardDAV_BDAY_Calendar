@@ -9,6 +9,7 @@ import asyncio
 import logging
 import re
 import xml.etree.ElementTree as ET
+from xml.sax.saxutils import escape
 from collections import Counter
 from dataclasses import dataclass, field
 from urllib.parse import unquote, urljoin, urlsplit
@@ -61,6 +62,33 @@ _QUERY_ALL = """<?xml version="1.0" encoding="utf-8"?>
   </d:prop>
   <c:filter/>
 </c:addressbook-query>"""
+
+
+# Listing + multiget is how regular sync clients read an addressbook. It does not
+# depend on server-side filtering, which iCloud handles unreliably.
+_PROPFIND_LIST_BODY = """<?xml version="1.0" encoding="utf-8"?>
+<d:propfind xmlns:d="DAV:">
+  <d:prop>
+    <d:resourcetype/>
+    <d:getetag/>
+  </d:prop>
+</d:propfind>"""
+
+_ADDRESS_DATA_PARTIAL = (
+    '<c:address-data><c:prop name="UID"/><c:prop name="FN"/><c:prop name="N"/>'
+    '<c:prop name="ORG"/><c:prop name="BDAY"/></c:address-data>'
+)
+_MULTIGET_BATCH = 100
+
+
+def _multiget_body(urls: list[str], *, partial: bool) -> str:
+    props = _ADDRESS_DATA_PARTIAL if partial else "<c:address-data/>"
+    hrefs = "".join(f"<d:href>{escape(urlsplit(url).path)}</d:href>" for url in urls)
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<c:addressbook-multiget xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:carddav">'
+        f"<d:prop>{props}</d:prop>{hrefs}</c:addressbook-multiget>"
+    )
 
 
 class CardDavError(Exception):
@@ -153,6 +181,12 @@ class ReportStats:
     without_bday: int = 0  # vCards that have no BDAY line at all
     duplicates: int = 0  # vCards dropped because their UID was already seen
     unparsed: Counter[str] = field(default_factory=Counter)  # masked BDAY formats we could not read
+
+    def merge(self, other: ReportStats) -> None:
+        self.cards += other.cards
+        self.without_bday += other.without_bday
+        self.duplicates += other.duplicates
+        self.unparsed.update(other.unparsed)
 
 
 def _masked_bday(card: str) -> str | None:
@@ -300,7 +334,107 @@ class CardDavClient:
         return []
 
     async def fetch_birthdays(self, addressbook_url: str) -> list[Birthday]:
-        """Return all contacts with a usable BDAY from one addressbook."""
+        """Return all contacts with a usable BDAY from one addressbook.
+
+        Preferred: list every vCard (PROPFIND) and fetch them in batches
+        (addressbook-multiget). Falls back to addressbook-query REPORTs if the
+        server does not support that or returns nothing usable.
+        """
+        try:
+            birthdays = await self._fetch_via_multiget(addressbook_url)
+        except CardDavHttpError as err:
+            _LOGGER.debug(
+                "Listing/multiget on %s failed (%s), falling back to addressbook-query",
+                addressbook_url,
+                err,
+            )
+        else:
+            if birthdays is not None:
+                return birthdays
+        return await self._fetch_via_query(addressbook_url)
+
+    async def _list_card_urls(self, addressbook_url: str) -> list[str]:
+        status, data, final_url = await self._request(
+            "PROPFIND", addressbook_url, depth="1", body=_PROPFIND_LIST_BODY
+        )
+        if status != 207:
+            raise CardDavHttpError(status, final_url)
+        book_path = urlsplit(final_url).path.rstrip("/")
+        urls: dict[str, None] = {}
+        for resource in parse_multistatus(data, final_url):
+            if resource.is_addressbook or resource.href.endswith("/"):
+                continue  # the collection itself or a sub-collection
+            if urlsplit(resource.href).path.rstrip("/") == book_path:
+                continue
+            urls[resource.href] = None
+        return list(urls)
+
+    async def _fetch_via_multiget(self, addressbook_url: str) -> list[Birthday] | None:
+        """Return birthdays, or None if the server gave nothing usable."""
+        urls = await self._list_card_urls(addressbook_url)
+        if not urls:
+            return None
+
+        loop = asyncio.get_running_loop()
+        birthdays: dict[str, Birthday] = {}
+        total = ReportStats()
+        for start in range(0, len(urls), _MULTIGET_BATCH):
+            batch = urls[start : start + _MULTIGET_BATCH]
+            for partial in (True, False):
+                status, data, _ = await self._request(
+                    "REPORT",
+                    addressbook_url,
+                    depth="1",
+                    body=_multiget_body(batch, partial=partial),
+                )
+                if status != 207:
+                    if partial:
+                        continue  # server may reject partial retrieval: ask for full vCards
+                    raise CardDavHttpError(status, addressbook_url)
+                found, stats = await loop.run_in_executor(None, parse_report, data)
+                if stats.cards >= len(batch):
+                    break
+                # Fewer vCards than requested: partial retrieval may be ignored; retry in full.
+            for birthday in found:
+                if birthday.uid in birthdays:
+                    total.duplicates += 1
+                else:
+                    birthdays[birthday.uid] = birthday
+            total.merge(stats)
+
+        _LOGGER.debug(
+            "Addressbook %s: %d cards listed, %d vCards fetched, %d birthdays, "
+            "%d without BDAY, %d duplicate UIDs, unreadable BDAY formats: %s",
+            addressbook_url,
+            len(urls),
+            total.cards,
+            len(birthdays),
+            total.without_bday,
+            total.duplicates,
+            dict(total.unparsed) or "none",
+        )
+        if total.cards == 0:
+            return None
+        if total.cards < len(urls):
+            _LOGGER.warning(
+                "The server listed %d contacts but returned only %d of them", len(urls), total.cards
+            )
+        if total.unparsed:
+            _LOGGER.warning(
+                "%d contacts have a BDAY value that could not be read (digits shown as 9): %s",
+                sum(total.unparsed.values()),
+                dict(total.unparsed),
+            )
+        if not birthdays:
+            _LOGGER.warning(
+                "No birthdays found in addressbook %s (%d vCards fetched)",
+                addressbook_url,
+                total.cards,
+            )
+        return list(birthdays.values())
+
+    async def _fetch_via_query(self, addressbook_url: str) -> list[Birthday]:
+        """Fallback: addressbook-query REPORT (filtered, then unfiltered)."""
         status = 0
         answered = False
         stats = ReportStats()

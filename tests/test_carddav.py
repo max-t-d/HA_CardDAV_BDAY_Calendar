@@ -206,9 +206,10 @@ async def test_fetch_birthdays_falls_back_to_unfiltered_query():
     birthdays = await _client(session).fetch_birthdays(BOOK)
 
     assert [(b.uid, b.name) for b in birthdays] == [("1", "Erika"), ("3", "Max")]
-    assert len(session.calls) == 2
-    assert b"prop-filter" in session.calls[0][2]["data"]
-    assert b"prop-filter" not in session.calls[1][2]["data"]
+    reports = [c for c in session.calls if c[0] == "REPORT"]
+    assert len(reports) == 2
+    assert b"prop-filter" in reports[0][2]["data"]
+    assert b"prop-filter" not in reports[1][2]["data"]
 
 
 async def test_fetch_birthdays_raises_when_both_queries_fail():
@@ -228,7 +229,7 @@ async def test_fetch_birthdays_falls_back_when_filtered_query_returns_nothing():
     session = FakeSession({("REPORT", BOOK): [FakeResponse(207, empty), FakeResponse(207, full)]})
     birthdays = await _client(session).fetch_birthdays(BOOK)
     assert [b.name for b in birthdays] == ["Erika"]
-    assert len(session.calls) == 2
+    assert len([c for c in session.calls if c[0] == "REPORT"]) == 2
 
 
 async def test_fetch_birthdays_without_any_birthday_is_empty_not_an_error(caplog):
@@ -237,6 +238,139 @@ async def test_fetch_birthdays_without_any_birthday_is_empty_not_an_error(caplog
     assert await _client(session).fetch_birthdays(BOOK) == []
     assert "No birthdays found" in caplog.text
     assert "1 vCards seen" in caplog.text
+
+
+def _listing(*names: str) -> bytes:
+    """PROPFIND Depth 1 on an addressbook: the collection itself plus its vCards."""
+    return _multistatus(
+        _response(
+            "/1234/carddavhome/card/",
+            "<d:resourcetype><d:collection/><c:addressbook/></d:resourcetype>",
+        ),
+        *(
+            _response(f"/1234/carddavhome/card/{name}.vcf", "<d:resourcetype/><d:getetag>\"x\"</d:getetag>")
+            for name in names
+        ),
+    )
+
+
+def _reports(session: FakeSession) -> list[bytes]:
+    return [kwargs["data"] for method, _, kwargs in session.calls if method == "REPORT"]
+
+
+async def test_multiget_gets_every_contact_even_if_filtered_query_would_not():
+    three = _report(
+        _vcard("1", "Erika", "1990-05-17"),
+        _vcard("2", "Max", "--0101"),
+        _vcard("3", "No Birthday", None),
+    )
+    session = FakeSession(
+        {
+            ("PROPFIND", BOOK): [FakeResponse(207, _listing("a", "b", "c"))],
+            ("REPORT", BOOK): [FakeResponse(207, three)],
+        }
+    )
+    birthdays = await _client(session).fetch_birthdays(BOOK)
+
+    assert [b.name for b in birthdays] == ["Erika", "Max"]
+    reports = _reports(session)
+    assert len(reports) == 1  # no addressbook-query involved
+    assert b"addressbook-multiget" in reports[0]
+    # Hrefs are sent as paths, one per listed vCard; the collection itself is not requested.
+    assert reports[0].count(b"<d:href>") == 3
+    assert b"<d:href>/1234/carddavhome/card/a.vcf</d:href>" in reports[0]
+    assert b"<d:href>/1234/carddavhome/card/</d:href>" not in reports[0]
+
+
+async def test_multiget_retries_in_full_when_partial_retrieval_is_ignored():
+    one = _report(_vcard("1", "Erika", "1990-05-17"))
+    three = _report(
+        _vcard("1", "Erika", "1990-05-17"),
+        _vcard("2", "Max", "--0101"),
+        _vcard("3", "Anna", "1985-12-24"),
+    )
+    session = FakeSession(
+        {
+            ("PROPFIND", BOOK): [FakeResponse(207, _listing("a", "b", "c"))],
+            ("REPORT", BOOK): [FakeResponse(207, one), FakeResponse(207, three)],
+        }
+    )
+    birthdays = await _client(session).fetch_birthdays(BOOK)
+
+    assert [b.name for b in birthdays] == ["Erika", "Max", "Anna"]
+    reports = _reports(session)
+    assert len(reports) == 2
+    assert b'name="BDAY"' in reports[0]
+    assert b'name="BDAY"' not in reports[1]
+
+
+async def test_multiget_rejecting_partial_retrieval_falls_back_to_full_vcards():
+    three = _report(_vcard("1", "Erika", "1990-05-17"))
+    session = FakeSession(
+        {
+            ("PROPFIND", BOOK): [FakeResponse(207, _listing("a"))],
+            ("REPORT", BOOK): [FakeResponse(400), FakeResponse(207, three)],
+        }
+    )
+    assert [b.name for b in await _client(session).fetch_birthdays(BOOK)] == ["Erika"]
+
+
+async def test_multiget_is_batched():
+    names = [f"c{i}" for i in range(250)]
+
+    def chunk(part: list[str]) -> FakeResponse:
+        return FakeResponse(207, _report(*(_vcard(n, n, "--0101") for n in part)))
+
+    session = FakeSession(
+        {
+            ("PROPFIND", BOOK): [FakeResponse(207, _listing(*names))],
+            ("REPORT", BOOK): [chunk(names[:100]), chunk(names[100:200]), chunk(names[200:])],
+        }
+    )
+    assert len(await _client(session).fetch_birthdays(BOOK)) == 250
+    assert len(_reports(session)) == 3
+
+
+async def test_listing_not_supported_falls_back_to_addressbook_query():
+    report = _report(_vcard("1", "Erika", "1990-05-17"))
+    session = FakeSession(
+        {
+            ("PROPFIND", BOOK): [FakeResponse(405)],
+            ("REPORT", BOOK): [FakeResponse(207, report)],
+        }
+    )
+    assert [b.name for b in await _client(session).fetch_birthdays(BOOK)] == ["Erika"]
+    assert b"prop-filter" in _reports(session)[0]
+
+
+async def test_multiget_returning_nothing_falls_back_to_addressbook_query():
+    empty = _multistatus()
+    report = _report(_vcard("1", "Erika", "1990-05-17"))
+    session = FakeSession(
+        {
+            ("PROPFIND", BOOK): [FakeResponse(207, _listing("a"))],
+            ("REPORT", BOOK): [FakeResponse(207, empty), FakeResponse(207, empty), FakeResponse(207, report)],
+        }
+    )
+    assert [b.name for b in await _client(session).fetch_birthdays(BOOK)] == ["Erika"]
+
+
+async def test_warns_when_server_returns_fewer_contacts_than_it_lists(caplog):
+    one = _report(_vcard("1", "Erika", "1990-05-17"))
+    session = FakeSession(
+        {
+            ("PROPFIND", BOOK): [FakeResponse(207, _listing("a", "b", "c"))],
+            ("REPORT", BOOK): [FakeResponse(207, one)],
+        }
+    )
+    assert len(await _client(session).fetch_birthdays(BOOK)) == 1
+    assert "listed 3 contacts but returned only 1" in caplog.text
+
+
+async def test_multiget_auth_error_is_not_swallowed():
+    session = FakeSession({("PROPFIND", BOOK): [FakeResponse(401)]})
+    with pytest.raises(CardDavAuthError):
+        await _client(session).fetch_birthdays(BOOK)
 
 
 def test_parse_report_stats_explain_where_contacts_went():
