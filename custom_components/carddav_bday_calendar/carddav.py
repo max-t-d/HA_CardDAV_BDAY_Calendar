@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
 from urllib.parse import unquote, urljoin, urlsplit
 
 import aiohttp
@@ -140,10 +142,31 @@ def parse_multistatus(data: bytes, base_url: str) -> list[Resource]:
     return resources
 
 
-def parse_report(data: bytes) -> tuple[list[Birthday], int]:
+_BDAY_LINE_RE = re.compile(r"^(?:[\w-]+\.)?BDAY([^:\r\n]*):([^\r\n]*)", re.IGNORECASE | re.MULTILINE)
+
+
+@dataclass(slots=True)
+class ReportStats:
+    """Counters for debugging a REPORT response; contains no personal data."""
+
+    cards: int = 0  # vCards in the response
+    without_bday: int = 0  # vCards that have no BDAY line at all
+    duplicates: int = 0  # vCards dropped because their UID was already seen
+    unparsed: Counter[str] = field(default_factory=Counter)  # masked BDAY formats we could not read
+
+
+def _masked_bday(card: str) -> str | None:
+    """Return the BDAY line with every digit replaced by 9 (shows the format only)."""
+    match = _BDAY_LINE_RE.search(card)
+    if match is None:
+        return None
+    return re.sub(r"\d", "9", f"BDAY{match[1]}:{match[2]}")[:80]
+
+
+def parse_report(data: bytes) -> tuple[list[Birthday], ReportStats]:
     """Extract birthdays from an addressbook-query REPORT response.
 
-    Returns (birthdays deduplicated by UID, number of vCards in the response).
+    Returns (birthdays deduplicated by UID, statistics about the response).
     """
     try:
         root = ET.fromstring(data)
@@ -151,14 +174,21 @@ def parse_report(data: bytes) -> tuple[list[Birthday], int]:
         raise CardDavError(f"Invalid XML from server: {err}") from err
 
     birthdays: dict[str, Birthday] = {}
-    cards = 0
+    stats = ReportStats()
     for element in root.iter(f"{CARDDAV}address-data"):
         if not element.text:
             continue
-        cards += 1
+        stats.cards += 1
         if birthday := parse_vcard(element.text):
-            birthdays.setdefault(birthday.uid, birthday)
-    return list(birthdays.values()), cards
+            if birthday.uid in birthdays:
+                stats.duplicates += 1
+            else:
+                birthdays[birthday.uid] = birthday
+        elif (masked := _masked_bday(element.text)) is not None:
+            stats.unparsed[masked] += 1
+        else:
+            stats.without_bday += 1
+    return list(birthdays.values()), stats
 
 
 def _name_from_href(href: str) -> str:
@@ -273,27 +303,42 @@ class CardDavClient:
         """Return all contacts with a usable BDAY from one addressbook."""
         status = 0
         answered = False
-        cards = 0
-        for body in (_QUERY_BIRTHDAYS, _QUERY_ALL):
+        stats = ReportStats()
+        for label, body in (("filtered", _QUERY_BIRTHDAYS), ("unfiltered", _QUERY_ALL)):
             status, data, _ = await self._request(
                 "REPORT", addressbook_url, depth="1", body=body
             )
             if status != 207:
                 _LOGGER.debug(
-                    "REPORT on %s returned HTTP %s, trying fallback", addressbook_url, status
+                    "REPORT (%s) on %s returned HTTP %s, trying fallback",
+                    label,
+                    addressbook_url,
+                    status,
                 )
                 continue
             answered = True
             # Parsing can be a few MB of XML if the server ignored partial retrieval.
-            birthdays, cards = await asyncio.get_running_loop().run_in_executor(
+            birthdays, stats = await asyncio.get_running_loop().run_in_executor(
                 None, parse_report, data
             )
             _LOGGER.debug(
-                "REPORT on %s: %d vCards in response, %d with a usable birthday",
+                "REPORT (%s) on %s: %d vCards, %d birthdays, %d without BDAY, "
+                "%d duplicate UIDs, unreadable BDAY formats: %s",
+                label,
                 addressbook_url,
-                cards,
+                stats.cards,
                 len(birthdays),
+                stats.without_bday,
+                stats.duplicates,
+                dict(stats.unparsed) or "none",
             )
+            if stats.unparsed:
+                _LOGGER.warning(
+                    "%d contacts have a BDAY value that could not be read "
+                    "(digits shown as 9): %s",
+                    sum(stats.unparsed.values()),
+                    dict(stats.unparsed),
+                )
             if birthdays:
                 return birthdays
             # A 207 without any birthday can also mean the server ignored or
@@ -304,6 +349,6 @@ class CardDavClient:
         _LOGGER.warning(
             "No birthdays found in addressbook %s (%d vCards seen in the last response)",
             addressbook_url,
-            cards,
+            stats.cards,
         )
         return []

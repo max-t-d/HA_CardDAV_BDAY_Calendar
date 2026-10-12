@@ -239,6 +239,32 @@ async def test_fetch_birthdays_without_any_birthday_is_empty_not_an_error(caplog
     assert "1 vCards seen" in caplog.text
 
 
+def test_parse_report_stats_explain_where_contacts_went():
+    report = _report(
+        _vcard("1", "Erika", "1990-05-17"),
+        _vcard("2", "Same UID", "1991-06-18").replace("UID:2", "UID:1"),
+        _vcard("3", "No Birthday", None),
+        _vcard("4", "Weird", "circa 1980-07-19"),
+        _vcard("5", "Weird 2", "circa 1981-08-20"),
+    )
+    birthdays, stats = parse_report(report)
+    assert [b.name for b in birthdays] == ["Erika"]
+    assert stats.cards == 5
+    assert stats.duplicates == 1
+    assert stats.without_bday == 1
+    # Digits are masked so that no real dates end up in logs.
+    assert dict(stats.unparsed) == {"BDAY:circa 9999-99-99": 2}
+
+
+async def test_unreadable_bday_formats_are_warned_about(caplog):
+    report = _report(_vcard("1", "Erika", "1990-05-17"), _vcard("2", "Weird", "um 1980"))
+    session = FakeSession({("REPORT", BOOK): [FakeResponse(207, report)]})
+    assert len(await _client(session).fetch_birthdays(BOOK)) == 1
+    assert "could not be read" in caplog.text
+    assert "BDAY:um 9999" in caplog.text
+    assert "Weird" not in caplog.text
+
+
 def test_parse_report_rejects_garbage():
     with pytest.raises(Exception, match="Invalid XML"):
         parse_report(b"<not xml")

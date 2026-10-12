@@ -110,8 +110,11 @@ filled immediately. If it stays empty:
    server returned.
 2. For details, enable debug logging (*Settings → Devices & services →
    CardDAV Birthday Calendar → Enable debug logging*), reload the integration
-   and look at the `REPORT on …` line: it shows how many vCards arrived and how
-   many had a usable birthday.
+   and look at the `REPORT (…) on …` line: it shows how many vCards arrived, how
+   many had a usable birthday, how many had no `BDAY` at all and how many were
+   dropped as duplicate UIDs. Unreadable birthday formats are listed in a
+   warning with all digits replaced by `9`, so no real dates or names end up in
+   the log.
 3. Make sure the contacts really have a birthday field and that you are
    looking at a month that contains one (the calendar view only shows the
    visible range).
